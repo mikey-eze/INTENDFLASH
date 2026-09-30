@@ -1,5 +1,8 @@
 require('dotenv').config();
-const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const { promisify } = require('util');
+const scryptAsync = promisify(crypto.scrypt);
+async function hashPassword(password){ const salt=crypto.randomBytes(16).toString('hex'); const key=await scryptAsync(password,salt,64); return `scrypt:${salt}:${Buffer.from(key).toString('hex')}`; }
 const { query, pool } = require('./db');
 
 const users = [
@@ -15,7 +18,7 @@ const users = [
   try {
     await query('BEGIN');
     for (const u of users) {
-      const passwordHash = await bcrypt.hash(u.password, 12);
+      const passwordHash = await hashPassword(u.password);
       await query(`INSERT INTO users (id,role,roll_no,name,password,department,year,section,class_name,gender,club,active)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         ON CONFLICT (id) DO UPDATE SET role=EXCLUDED.role, roll_no=EXCLUDED.roll_no, name=EXCLUDED.name,
