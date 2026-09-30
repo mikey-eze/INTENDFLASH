@@ -1,5 +1,5 @@
 require('dotenv').config();
-const express=require('express'), path=require('path'), crypto=require('crypto'), bcrypt=require('bcryptjs');
+const express=require('express'), path=require('path'), crypto=require('crypto');
 const { query } = require('./db');
 const app=express(), PORT=process.env.PORT||3000;
 app.set('view engine','ejs'); app.set('views',path.join(__dirname,'views'));
@@ -7,6 +7,20 @@ app.use(express.urlencoded({extended:true})); app.use(express.json()); app.use(e
 const sessions=new Map();
 function tabId(req){return String(req.query.tab||req.body?.tab||'').trim();}
 function me(req){const id=tabId(req); return id && sessions.has(id) ? db().users.find(u=>u.id===sessions.get(id))||null : null;}
+const { promisify } = require('util');
+const scryptAsync = promisify(crypto.scrypt);
+async function hashPassword(password){
+  const salt=crypto.randomBytes(16).toString('hex');
+  const derived=await scryptAsync(password,salt,64);
+  return `scrypt:${salt}:${Buffer.from(derived).toString('hex')}`;
+}
+async function verifyPassword(password,stored){
+  if(!stored || !stored.startsWith('scrypt:')) return false;
+  const [,salt,key]=stored.split(':');
+  const derived=await scryptAsync(password,salt,64);
+  const a=Buffer.from(key,'hex'), b=Buffer.from(derived);
+  return a.length===b.length && crypto.timingSafeEqual(a,b);
+}
 async function persistSession(token,userId){
   await query('INSERT INTO sessions (token,user_id,expires_at) VALUES ($1,$2,NOW()+INTERVAL \'7 days\') ON CONFLICT (token) DO UPDATE SET user_id=EXCLUDED.user_id, expires_at=EXCLUDED.expires_at',[token,userId]);
 }
@@ -104,7 +118,7 @@ app.post('/login',async(req,res)=>{
     const d=db(), k=String(req.body.rollNo||'').trim().toUpperCase(), p=String(req.body.password||'');
     const u=d.users.find(x=>String(x.rollNo||'').toUpperCase()===k||String(x.id||'').toUpperCase()===k);
     if(!u||u.active===false)return res.status(401).render('login',{message:'Invalid login details.'});
-    const valid=await bcrypt.compare(p,u.password);
+    const valid=await verifyPassword(p,u.password);
     if(!valid)return res.status(401).render('login',{message:'Invalid login details.'});
     const t=tabId(req)||crypto.randomUUID();
     sessions.set(t,u.id);
@@ -157,7 +171,7 @@ app.post('/admin/account/create',login,role('admin'),async(req,res)=>{
     if(d.users.some(x=>x.id===id||x.rollNo===id)){
       flash(req,'Account ID already exists.'); return res.redirect(withTab('/',req)+'#accounts');
     }
-    const account={id,role:roleName,name,password:await bcrypt.hash(password,12),active:true};
+    const account={id,role:roleName,name,password:await hashPassword(password),active:true};
     if(roleName==='student'){
       account.rollNo=id; account.department=String(req.body.department||'CSE').trim();
       account.year=String(req.body.year||'2nd Year').trim();
