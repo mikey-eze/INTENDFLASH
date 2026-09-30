@@ -1,5 +1,5 @@
 require('dotenv').config();
-const express=require('express'), path=require('path'), crypto=require('crypto');
+const express=require('express'), path=require('path'), crypto=require('crypto'), bcrypt=require('bcryptjs');
 const { query } = require('./db');
 const app=express(), PORT=process.env.PORT||3000;
 app.set('view engine','ejs'); app.set('views',path.join(__dirname,'views'));
@@ -7,6 +7,14 @@ app.use(express.urlencoded({extended:true})); app.use(express.json()); app.use(e
 const sessions=new Map();
 function tabId(req){return String(req.query.tab||req.body?.tab||'').trim();}
 function me(req){const id=tabId(req); return id && sessions.has(id) ? db().users.find(u=>u.id===sessions.get(id))||null : null;}
+async function persistSession(token,userId){
+  await query('INSERT INTO sessions (token,user_id,expires_at) VALUES ($1,$2,NOW()+INTERVAL \'7 days\') ON CONFLICT (token) DO UPDATE SET user_id=EXCLUDED.user_id, expires_at=EXCLUDED.expires_at',[token,userId]);
+}
+async function loadSessions(){
+  const r=await query('SELECT token,user_id FROM sessions WHERE expires_at>NOW()');
+  for(const row of r.rows) sessions.set(row.token,row.user_id);
+  await query('DELETE FROM sessions WHERE expires_at<=NOW()');
+}
 function withTab(pathname, req){const t=tabId(req); return t ? pathname+(pathname.includes('?')?'&':'?')+'tab='+encodeURIComponent(t) : pathname;}
 app.use((req,res,next)=>{req.tab=tabId(req); next();});
 let memoryData={users:[],events:[],registrations:[],attendance:[],permissionRequests:[],auditLogs:[],notifications:[]};
@@ -91,8 +99,31 @@ function currentPeriod(){
 function toMin(v){const [h,m]=v.split(':').map(Number);return h*60+m;}
 
 app.get('/login',(req,res)=>{if(!req.tab)return res.render('login',{message:''}); if(me(req))return res.redirect(withTab('/',req)); res.render('login',{message:getFlash(req)});});
-app.post('/login',(req,res)=>{let d=db(),k=String(req.body.rollNo||'').trim().toUpperCase(),p=String(req.body.password||'');let u=d.users.find(x=>String(x.rollNo||'').toUpperCase()===k||String(x.id||'').toUpperCase()===k);if(!u||u.active===false)return res.status(401).render('login',{message:'Invalid login details.'});const t=tabId(req)||crypto.randomUUID();if(u.password!==p)return res.status(401).render('login',{message:'Invalid login details.'});sessions.set(t,u.id);audit('AUTH', `Login: ${u.name} (${u.role})`, {query:{tab:t},body:{}}, {});res.redirect('/?tab='+encodeURIComponent(t));});
-app.get('/logout',(req,res)=>{if(req.tab){audit('AUTH','Logout',req);sessions.delete(req.tab);}res.redirect('/login'+(req.tab?'?tab='+encodeURIComponent(req.tab):''));});
+app.post('/login',async(req,res)=>{
+  try {
+    const d=db(), k=String(req.body.rollNo||'').trim().toUpperCase(), p=String(req.body.password||'');
+    const u=d.users.find(x=>String(x.rollNo||'').toUpperCase()===k||String(x.id||'').toUpperCase()===k);
+    if(!u||u.active===false)return res.status(401).render('login',{message:'Invalid login details.'});
+    const valid=await bcrypt.compare(p,u.password);
+    if(!valid)return res.status(401).render('login',{message:'Invalid login details.'});
+    const t=tabId(req)||crypto.randomUUID();
+    sessions.set(t,u.id);
+    await persistSession(t,u.id);
+    audit('AUTH', `Login: ${u.name} (${u.role})`, {query:{tab:t},body:{}}, {});
+    res.redirect('/?tab='+encodeURIComponent(t));
+  } catch(err) {
+    console.error('Login failed:',err);
+    res.status(500).render('login',{message:'Login service temporarily unavailable.'});
+  }
+});
+app.get('/logout',async(req,res)=>{
+  if(req.tab){
+    audit('AUTH','Logout',req);
+    sessions.delete(req.tab);
+    await query('DELETE FROM sessions WHERE token=$1',[req.tab]).catch(()=>{});
+  }
+  res.redirect('/login'+(req.tab?'?tab='+encodeURIComponent(req.tab):''));
+});
 app.get('/profile',login,role('student'),(req,res)=>res.render('profile',{student:me(req),tab:req.tab}));
 
 app.get('/',login,(req,res)=>{
@@ -113,9 +144,9 @@ app.post('/event/:id/attendance',login,role('event_coordinator','admin'),(req,re
 app.post('/permission/create',login,role('student'),(req,res)=>{let d=db(),u=me(req),text=String(req.body.letterText||'').trim(),purpose=String(req.body.purpose||'').trim();if(!text||!purpose){flash(req,'Please complete the purpose and permission letter.');return res.redirect(withTab('/',req)+'#permissions');}d.permissionRequests=d.permissionRequests||[];const permission={id:Date.now(),studentId:u.id,purpose,letterText:text,status:'PENDING',createdAt:new Date().toISOString(),savedAt:null,savedBy:null};d.permissionRequests.push(permission);notify(d,u.id,'PERMISSION','Permission letter submitted to the Academic Coordinator.',{permissionId:permission.id});save(d);audit('PERMISSION', `Permission letter submitted: ${u.name} (${u.rollNo||u.id}) — ${purpose}`, req, {permissionId:permission.id,studentId:u.id});flash(req,'Permission letter sent to the coordinator.');res.redirect(withTab('/',req)+'#permissions')});
 app.post('/permission/:id/status',login,role('coordinator'),(req,res)=>{let d=db(),u=me(req),p=(d.permissionRequests||[]).find(x=>x.id===Number(req.params.id));if(!p)return res.redirect(withTab('/',req));const status=String(req.body.status||'SAVED').toUpperCase();if(!['SAVED','REJECTED'].includes(status))return res.redirect(withTab('/',req));p.status=status;p.savedAt=status==='SAVED'?new Date().toISOString():null;p.savedBy=u.id;notify(d,p.studentId,'PERMISSION',status==='SAVED'?'Permission letter approved and saved by the Academic Coordinator.':'Permission letter was rejected by the Academic Coordinator.',{permissionId:p.id});save(d);audit('PERMISSION', `Permission letter ${status.toLowerCase()}: ${p.id}`, req, {permissionId:p.id,studentId:p.studentId});flash(req,status==='SAVED'?'Permission letter saved for future reference.':'Permission letter rejected.');res.redirect(withTab('/',req))});
 
-app.post('/admin/account/create',login,role('admin'),(req,res)=>{let d=db(),u=me(req);const roleName=String(req.body.role||'student').trim();const name=String(req.body.name||'').trim();const id=String(req.body.id||'').trim();const password=String(req.body.password||'').trim();if(!name||!id||!password||!['student','event_coordinator','coordinator','teacher'].includes(roleName)){flash(req,'Invalid account details.');return res.redirect(withTab('/',req)+'#accounts')}if(d.users.some(x=>x.id===id||x.rollNo===id)){flash(req,'Account ID already exists.');return res.redirect(withTab('/',req)+'#accounts')}const account={id,role:roleName,name,password,active:true};if(roleName==='student'){account.rollNo=id;account.department='CSE';account.className='CSE-E';account.gender='male'}d.users.push(account);save(d);audit('ADMIN',`Account created: ${name} (${roleName})`,req,{accountId:id});flash(req,'Account created.');res.redirect(withTab('/',req)+'#accounts')});
+app.post('/admin/account/create',login,role('admin'),(req,res)=>{let d=db(),u=me(req);const roleName=String(req.body.role||'student').trim();const name=String(req.body.name||'').trim();const id=String(req.body.id||'').trim();const password=String(req.body.password||'').trim();if(!name||!id||!password||!['student','event_coordinator','coordinator','teacher'].includes(roleName)){flash(req,'Invalid account details.');return res.redirect(withTab('/',req)+'#accounts')}if(d.users.some(x=>x.id===id||x.rollNo===id)){flash(req,'Account ID already exists.');return res.redirect(withTab('/',req)+'#accounts')}const account={id,role:roleName,name,password,active:true};if(roleName==='student'){account.rollNo=id;account.department='CSE';account.className='CSE-E';account.gender='male'}bcrypt.hash(password,12).then(hash=>{account.password=hash;d.users.push(account);save(d);audit('ADMIN',`Account created: ${name} (${roleName})`,req,{accountId:id});}).catch(err=>console.error('Password hashing failed:',err));flash(req,'Account created.');res.redirect(withTab('/',req)+'#accounts')});
 app.post('/admin/account/:id/toggle',login,role('admin'),(req,res)=>{let d=db(),target=d.users.find(x=>x.id===req.params.id);if(!target||target.id===me(req).id){flash(req,'Account cannot be changed.');return res.redirect(withTab('/',req)+'#accounts')}target.active=target.active===false;save(d);audit('ADMIN',`Account ${target.active?'activated':'deactivated'}: ${target.name}`,req,{accountId:target.id});flash(req,`Account ${target.active?'activated':'deactivated'}.`);res.redirect(withTab('/',req)+'#accounts')});
 app.post('/admin/notifications/read',login,role('admin'),(req,res)=>{let d=db();d.notifications=(d.notifications||[]).map(n=>n.userId===me(req).id?{...n,read:true}:n);save(d);res.redirect(withTab('/',req))});
 app.get('/admin/logs',login,role('admin'),(req,res)=>{ const d=db(); res.json((d.auditLogs||[]).slice(-500)); });
 
-loadData().then(()=>app.listen(PORT,()=>console.log(`INTENDFLASH running: http://localhost:${PORT}`))).catch(err=>{console.error('Database connection failed:',err);process.exit(1);});
+loadData().then(()=>loadSessions()).then(()=>app.listen(PORT,()=>console.log(`INTENDFLASH running: http://localhost:${PORT}`))).catch(err=>{console.error('Database connection failed:',err);process.exit(1);});
