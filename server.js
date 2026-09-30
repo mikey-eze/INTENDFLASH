@@ -144,7 +144,36 @@ app.post('/event/:id/attendance',login,role('event_coordinator','admin'),(req,re
 app.post('/permission/create',login,role('student'),(req,res)=>{let d=db(),u=me(req),text=String(req.body.letterText||'').trim(),purpose=String(req.body.purpose||'').trim();if(!text||!purpose){flash(req,'Please complete the purpose and permission letter.');return res.redirect(withTab('/',req)+'#permissions');}d.permissionRequests=d.permissionRequests||[];const permission={id:Date.now(),studentId:u.id,purpose,letterText:text,status:'PENDING',createdAt:new Date().toISOString(),savedAt:null,savedBy:null};d.permissionRequests.push(permission);notify(d,u.id,'PERMISSION','Permission letter submitted to the Academic Coordinator.',{permissionId:permission.id});save(d);audit('PERMISSION', `Permission letter submitted: ${u.name} (${u.rollNo||u.id}) — ${purpose}`, req, {permissionId:permission.id,studentId:u.id});flash(req,'Permission letter sent to the coordinator.');res.redirect(withTab('/',req)+'#permissions')});
 app.post('/permission/:id/status',login,role('coordinator'),(req,res)=>{let d=db(),u=me(req),p=(d.permissionRequests||[]).find(x=>x.id===Number(req.params.id));if(!p)return res.redirect(withTab('/',req));const status=String(req.body.status||'SAVED').toUpperCase();if(!['SAVED','REJECTED'].includes(status))return res.redirect(withTab('/',req));p.status=status;p.savedAt=status==='SAVED'?new Date().toISOString():null;p.savedBy=u.id;notify(d,p.studentId,'PERMISSION',status==='SAVED'?'Permission letter approved and saved by the Academic Coordinator.':'Permission letter was rejected by the Academic Coordinator.',{permissionId:p.id});save(d);audit('PERMISSION', `Permission letter ${status.toLowerCase()}: ${p.id}`, req, {permissionId:p.id,studentId:p.studentId});flash(req,status==='SAVED'?'Permission letter saved for future reference.':'Permission letter rejected.');res.redirect(withTab('/',req))});
 
-app.post('/admin/account/create',login,role('admin'),(req,res)=>{let d=db(),u=me(req);const roleName=String(req.body.role||'student').trim();const name=String(req.body.name||'').trim();const id=String(req.body.id||'').trim();const password=String(req.body.password||'').trim();if(!name||!id||!password||!['student','event_coordinator','coordinator','teacher'].includes(roleName)){flash(req,'Invalid account details.');return res.redirect(withTab('/',req)+'#accounts')}if(d.users.some(x=>x.id===id||x.rollNo===id)){flash(req,'Account ID already exists.');return res.redirect(withTab('/',req)+'#accounts')}const account={id,role:roleName,name,password,active:true};if(roleName==='student'){account.rollNo=id;account.department='CSE';account.className='CSE-E';account.gender='male'}bcrypt.hash(password,12).then(hash=>{account.password=hash;d.users.push(account);save(d);audit('ADMIN',`Account created: ${name} (${roleName})`,req,{accountId:id});}).catch(err=>console.error('Password hashing failed:',err));flash(req,'Account created.');res.redirect(withTab('/',req)+'#accounts')});
+app.post('/admin/account/create',login,role('admin'),async(req,res)=>{
+  try {
+    let d=db(),u=me(req);
+    const roleName=String(req.body.role||'student').trim();
+    const name=String(req.body.name||'').trim();
+    const id=String(req.body.id||'').trim();
+    const password=String(req.body.password||'').trim();
+    if(!name||!id||!password||!['student','event_coordinator','coordinator','teacher'].includes(roleName)){
+      flash(req,'Invalid account details.'); return res.redirect(withTab('/',req)+'#accounts');
+    }
+    if(d.users.some(x=>x.id===id||x.rollNo===id)){
+      flash(req,'Account ID already exists.'); return res.redirect(withTab('/',req)+'#accounts');
+    }
+    const account={id,role:roleName,name,password:await bcrypt.hash(password,12),active:true};
+    if(roleName==='student'){
+      account.rollNo=id; account.department=String(req.body.department||'CSE').trim();
+      account.year=String(req.body.year||'2nd Year').trim();
+      account.section=String(req.body.section||'E').trim();
+      account.className=account.department+'-'+account.section;
+      account.gender=String(req.body.gender||'').trim()||null;
+    }
+    d.users.push(account);
+    await save(d);
+    audit('ADMIN',`Account created: ${name} (${roleName})`,req,{accountId:id});
+    flash(req,'Account created.'); res.redirect(withTab('/',req)+'#accounts');
+  } catch(err) {
+    console.error('Account creation failed:',err);
+    flash(req,'Could not create account.'); res.redirect(withTab('/',req)+'#accounts');
+  }
+});
 app.post('/admin/account/:id/toggle',login,role('admin'),(req,res)=>{let d=db(),target=d.users.find(x=>x.id===req.params.id);if(!target||target.id===me(req).id){flash(req,'Account cannot be changed.');return res.redirect(withTab('/',req)+'#accounts')}target.active=target.active===false;save(d);audit('ADMIN',`Account ${target.active?'activated':'deactivated'}: ${target.name}`,req,{accountId:target.id});flash(req,`Account ${target.active?'activated':'deactivated'}.`);res.redirect(withTab('/',req)+'#accounts')});
 app.post('/admin/notifications/read',login,role('admin'),(req,res)=>{let d=db();d.notifications=(d.notifications||[]).map(n=>n.userId===me(req).id?{...n,read:true}:n);save(d);res.redirect(withTab('/',req))});
 app.get('/admin/logs',login,role('admin'),(req,res)=>{ const d=db(); res.json((d.auditLogs||[]).slice(-500)); });
