@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "db:init": "node -e \"require(\"dotenv\").config(); const fs=require(\"fs\"); const {query,pool}=require(\"./db\"); (async()=>{await query(fs.readFileSync(\"schema.sql\",\"utf8\")); await pool.end();})().catch(e=>{console.error(e);process.exit(1)})\"",
+    "db:init": "node db-init.js",
     "db:seed": "node seed.js"
   },
   "dependencies": {
