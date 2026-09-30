@@ -1,0 +1,18 @@
+{
+  "name": "intendflash-event-attendance",
+  "version": "2.0.0",
+  "description": "INTENDFLASH college event registration and attendance authorization portal",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "db:init": "node -e \"require(\"dotenv\").config(); const fs=require(\"fs\"); const {query,pool}=require(\"./db\"); (async()=>{await query(fs.readFileSync(\"schema.sql\",\"utf8\")); await pool.end();})().catch(e=>{console.error(e);process.exit(1)})\"",
+    "db:seed": "node seed.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "ejs": "^6.0.1",
+    "express": "^5.1.0",
+    "pg": "^8.16.3"
+  }
+}
