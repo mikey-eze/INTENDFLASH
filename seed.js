@@ -1,4 +1,5 @@
 require('dotenv').config();
+const bcrypt = require('bcryptjs');
 const { query, pool } = require('./db');
 
 const users = [
@@ -14,15 +15,16 @@ const users = [
   try {
     await query('BEGIN');
     for (const u of users) {
+      const passwordHash = await bcrypt.hash(u.password, 12);
       await query(`INSERT INTO users (id,role,roll_no,name,password,department,year,section,class_name,gender,club,active)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         ON CONFLICT (id) DO UPDATE SET role=EXCLUDED.role, roll_no=EXCLUDED.roll_no, name=EXCLUDED.name,
         password=EXCLUDED.password, department=EXCLUDED.department, year=EXCLUDED.year, section=EXCLUDED.section,
         class_name=EXCLUDED.class_name, gender=EXCLUDED.gender, club=EXCLUDED.club, active=EXCLUDED.active`,
-        [u.id,u.role,u.rollNo||null,u.name,u.password,u.department||null,u.year||null,u.section||null,u.className||null,u.gender||null,u.club||null,u.active]);
+        [u.id,u.role,u.rollNo||null,u.name,passwordHash,u.department||null,u.year||null,u.section||null,u.className||null,u.gender||null,u.club||null,u.active]);
     }
     await query('COMMIT');
-    console.log('INTENDFLASH database seeded.');
+    console.log('INTENDFLASH database seeded with hashed passwords.');
   } catch (e) {
     await query('ROLLBACK').catch(()=>{});
     console.error(e);
