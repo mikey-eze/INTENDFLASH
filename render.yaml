@@ -3,7 +3,7 @@ services:
     name: intendflash
     runtime: node
     plan: free
-    buildCommand: npm ci
+    buildCommand: npm ci && npm run db:init
     startCommand: npm start
     healthCheckPath: /login
     envVars:
