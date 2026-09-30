@@ -96,9 +96,10 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, crea
 
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMPTZ NOT NULL
 );
+ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_user_id_fkey;
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
